@@ -44,6 +44,9 @@ interface OxMySQL {
   transaction: (query: Transaction, params?: Params | Callback<boolean>, cb?: Callback<boolean>) => Promise<boolean>;
   isReady: () => boolean;
   awaitConnection: () => Promise<true>;
+  startTransaction: (
+    cb: (query: <T = Result | null>(statement: string, params?: Params) => Promise<T>) => Promise<boolean | void>
+  ) => Promise<boolean>;
 }
 
 const QueryStore: string[] = [];
@@ -53,7 +56,10 @@ function assert(condition: boolean, message: string) {
 }
 
 const safeArgs = (query: Query | Transaction, params?: any, cb?: Function, transaction?: true) => {
-  if (typeof query === 'number') query = QueryStore[query];
+  if (typeof query === 'number') {
+    query = QueryStore[query];
+    assert(typeof query === 'string', 'First argument received invalid query store reference');
+  }
 
   if (transaction) {
     assert(typeof query === 'object', `First argument expected object, recieved ${typeof query}`);
@@ -79,6 +85,7 @@ const safeArgs = (query: Query | Transaction, params?: any, cb?: Function, trans
   return [query, params, cb];
 };
 
+declare var global: any;
 const exp = global.exports.oxmysql;
 const currentResourceName = GetCurrentResourceName();
 
@@ -105,7 +112,7 @@ export const oxmysql: OxMySQL = {
   },
   ready(callback) {
     setImmediate(async () => {
-      while (GetResourceState('oxmysql') !== 'started') await new Promise((resolve) => setTimeout(resolve, 50));
+      while (GetResourceState('oxmysql') !== 'started') await new Promise((resolve) => setTimeout(resolve, 50, null));
       callback();
     });
   },
@@ -154,5 +161,8 @@ export const oxmysql: OxMySQL = {
   },
   async awaitConnection() {
     return await exp.awaitConnection();
+  },
+  async startTransaction(cb) {
+    return exp.startTransaction(cb, currentResourceName);
   },
 };

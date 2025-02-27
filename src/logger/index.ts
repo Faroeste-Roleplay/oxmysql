@@ -1,13 +1,31 @@
-import { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import { mysql_debug, mysql_log_size, mysql_slow_query_warning, mysql_ui } from '../config';
 import type { CFXCallback, CFXParameters } from '../types';
 import { dbVersion } from '../database';
+
+let loggerResource = '';
+let loggerService = GetConvar('mysql_logger_service', '');
+
+if (loggerService) {
+  if (loggerService.startsWith('@')) {
+    const [resource, ...path] = loggerService.slice(1).split('/');
+
+    if (resource && path) {
+      loggerResource = resource;
+      loggerService = path.join('/');
+    }
+  } else loggerService = `logger/${loggerService}`;
+}
+
+export const logger =
+  (loggerService &&
+    new Function(LoadResourceFile(loggerResource || GetCurrentResourceName(), `${loggerService}.js`))()) ||
+  (() => {});
 
 export function logError(
   invokingResource: string,
   cb: CFXCallback | undefined,
   isPromise: boolean | undefined,
-  err: Error | string = '',
+  err: any | string = '', // i cbf typing the error right now
   query?: string,
   parameters?: CFXParameters,
   includeParameters?: boolean
@@ -26,59 +44,24 @@ export function logError(
     resource: invokingResource,
   });
 
-  if (cb && isPromise) return cb(null, output);
+  if (typeof err === 'object' && err.message) delete err.sqlMessage;
+
+  logger({
+    level: 'error',
+    resource: invokingResource,
+    message: message,
+    metadata: err,
+  });
+
+  if (cb && isPromise) {
+    try {
+      return cb(null, output);
+    } catch (e) {}
+
+    return;
+  }
 
   console.error(output);
-}
-
-export const profilerStatements = [
-  'SET profiling_history_size = 0',
-  'SET profiling = 0',
-  'SET profiling_history_size = 100',
-  'SET profiling = 1',
-];
-
-/**
- * Executes MySQL queries to fetch accurate query profiling results when `mysql_debug` is enabled.
- */
-export async function runProfiler(connection: PoolConnection, invokingResource: string) {
-  if (!mysql_debug) return;
-
-  if (Array.isArray(mysql_debug) && !mysql_debug.includes(invokingResource)) return;
-
-  for (const statement of profilerStatements) await connection.query(statement);
-
-  return true;
-}
-
-export async function profileBatchStatements(
-  connection: PoolConnection,
-  invokingResource: string,
-  query: string | { query: string; params?: CFXParameters }[],
-  parameters: CFXParameters | null,
-  offset: number
-) {
-  const [profiler] = <RowDataPacket[]>(
-    await connection.query(
-      'SELECT FORMAT(SUM(DURATION) * 1000, 4) AS `duration` FROM INFORMATION_SCHEMA.PROFILING GROUP BY QUERY_ID'
-    )
-  );
-
-  for (const statement of profilerStatements) await connection.query(statement);
-
-  if (profiler.length === 0) return;
-
-  if (typeof query === 'string' && parameters)
-    for (let i = 0; i < profiler.length; i++) {
-      logQuery(invokingResource, query, parseFloat(profiler[i].duration), parameters[offset + i]);
-    }
-  else if (typeof query === 'object')
-    for (let i = 0; i < profiler.length; i++) {
-      const transaction = query[offset + i];
-      if (transaction)
-        logQuery(invokingResource, transaction.query, parseFloat(profiler[i].duration), transaction.params);
-      else break;
-    }
 }
 
 interface QueryData {
